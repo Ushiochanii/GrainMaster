@@ -1,0 +1,55 @@
+project:
+  name: GrainMaster Mozume
+  phase: prototype_p0
+  acceptance_image: data/raw/0462.jpg
+
+model:
+  family: YOLO26
+  variant: yolo26s-seg
+  imgsz: 1024
+  class_names: [seed]
+  confidence: 0.25
+
+calibration:
+  ruler:
+    enabled: true
+    unit: mm
+  colorchecker:
+    enabled: true
+    output_color_space: CIELAB
+    qc_metric: deltaE00
+    # Confirm physical chart version before selecting post-November-2014 data.
+    reference_dataset: ColorChecker 2005
+    model: root_polynomial2
+
+dish_detection:
+  method: classical
+  expected_background: blue
+  expected_count_for_acceptance_image: 4
+
+measurement:
+  length: ellipse_major_axis
+  width: ellipse_minor_axis
+  area: mask_area
+  color:
+    space: CIELAB
+    statistic: median
+    erode_mask: true
+
+prototype:
+  export_csv: true
+  export_preview: true
+  do_resolution_study: false
+  do_model_benchmark: false
+
+segmentation:
+  # P0 bootstrap only; switch after training a one-class seed checkpoint.
+  backend: classical
+  weights: null
+
+
+geometry_diagnostics:
+  enabled: true
+  # Two references are compared; no candidate warp changes P0 measurements.
+  scale_warning_percent: 3.0
+  export_candidate_preview: true
