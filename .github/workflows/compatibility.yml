@@ -1,0 +1,51 @@
+name: Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  compatibility:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install CPU PyTorch
+        if: runner.os != 'macOS'
+        run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch on macOS
+        if: runner.os == 'macOS'
+        run: python -m pip install torch torchvision
+
+      - name: Install GrainMaster
+        run: python -m pip install -e ".[web,model,dev]"
+
+      - name: Run public tests
+        run: python -m pytest -q
+
+      - name: Load bundled model
+        run: python -c "from ultralytics import YOLO; m=YOLO('weights/seed_v1_yolo26s_seg.pt'); print(type(m).__name__)"
+
+      - name: Check web health
+        run: python -c "from pathlib import Path; from fastapi.testclient import TestClient; from grainmaster.web_server import create_app; app=create_app(Path('.').resolve(), config_path=Path('configs/workbench_yolo26.yaml'), state_root=Path('artifacts/ci')); r=TestClient(app).get('/api/health'); print(r.status_code, r.json()); assert r.status_code == 200"
