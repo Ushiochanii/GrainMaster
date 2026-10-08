@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,6 +59,11 @@ class IntegrationTestRequest(BaseModel):
 
 
 def create_app(project_root=ROOT, config_path=None, state_root=None):
+    trusted_origins = {
+        value.strip().rstrip("/")
+        for value in os.environ.get("GRAINMASTER_TRUSTED_ORIGINS", "").split(",")
+        if value.strip()
+    }
     project = Path(project_root).resolve()
     config = Path(config_path or project / "configs/prototype.yaml")
     workbench_config = yaml.safe_load(config.read_text(encoding="utf-8"))
@@ -124,7 +131,10 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
             from urllib.parse import urlparse
 
             hostname = urlparse(origin).hostname
-            trusted = hostname in {"127.0.0.1", "localhost", "::1"}
+            trusted = (
+                origin.rstrip("/") in trusted_origins
+                or hostname in {"127.0.0.1", "localhost", "::1"}
+            )
             if hostname and not trusted:
                 try:
                     from ipaddress import ip_address, ip_network
@@ -154,7 +164,7 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
                             if metadata.exists()
                             else path.name
                         )
-                        registry.setdefault(path.stem, {"path": path, "filename": filename})
+                        registry.setdefault(path.stem, {"path": path, "filename": filename, "is_imported": True})
 
     def image_record(image_id):
         if not SAFE_ID.fullmatch(image_id):
@@ -206,8 +216,8 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
             )
 
     def queue(image_id, force=False):
-        record = image_record(image_id)
         with lock:
+            record = image_record(image_id)
             active = next(
                 (
                     j
@@ -270,9 +280,9 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
         return {"job_id": job_id, "image_id": image_id}
 
     def queue_labels(image_id):
-        folder = output_dir(image_id)
-        record = image_record(image_id)
         with lock:
+            folder = output_dir(image_id)
+            record = image_record(image_id)
             previous = label_jobs.get(image_id)
             if previous and previous['status'] in {'queued', 'running'}:
                 return dict(previous)
@@ -375,7 +385,7 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
         discover()
         images = []
         for image_id, record in sorted(registry.items(), key=lambda item: (not item[1].get("is_example", False), item[0])):
-            entry = {"image_id": image_id, "filename": record["filename"], "processed": False, "is_example": bool(record.get("is_example", False))}
+            entry = {"image_id": image_id, "filename": record["filename"], "processed": False, "is_example": bool(record.get("is_example", False)), "is_imported": bool(record.get("is_imported", False))}
             try:
                 folder = output_dir(image_id)
                 status = json.loads((folder / "run_status.json").read_text())
@@ -427,8 +437,43 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
             json.dumps({"filename": filename}, ensure_ascii=False), encoding="utf-8"
         )
         with lock:
-            registry[image_id] = {"path": destination, "filename": filename}
+            registry[image_id] = {"path": destination, "filename": filename, "is_imported": True}
         return {"image_id": image_id, "filename": filename, "processed": False}
+
+    @app.delete("/api/images/{image_id}")
+    def delete_image(image_id: str):
+        with lock:
+            record = image_record(image_id)
+            source = record["path"]
+            if not record.get("is_imported") or source.resolve().parent != uploads.resolve():
+                raise HTTPException(403, "Only imported photos can be deleted")
+            active = any(
+                job["image_id"] == image_id and job["status"] in {"queued", "running"}
+                for job in jobs.values()
+            )
+            labels = label_jobs.get(image_id, {})
+            if active or labels.get("status") in {"queued", "running"}:
+                raise HTTPException(409, "Wait for photo analysis or label recognition to finish before deleting")
+            from .web_preview import display_cache_key
+
+            folder = runs / source.stem
+            preview_sources = [source]
+            if folder.exists():
+                preview_sources.extend(path for path in folder.rglob("*") if path.is_file())
+            for path in preview_sources:
+                if path.exists():
+                    cached = state / "display_cache" / f"{display_cache_key(path)}.jpg"
+                    cached.unlink(missing_ok=True)
+            if folder.exists():
+                shutil.rmtree(folder)
+            (reviews / f"{image_id}.json").unlink(missing_ok=True)
+            source.with_suffix(".json").unlink(missing_ok=True)
+            source.unlink(missing_ok=True)
+            registry.pop(image_id)
+            label_jobs.pop(image_id, None)
+            for job_id in [key for key, job in jobs.items() if job["image_id"] == image_id]:
+                jobs.pop(job_id)
+            return {"deleted": True, "image_id": image_id}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str, after_revision: int = 0):

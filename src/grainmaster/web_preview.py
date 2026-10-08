@@ -8,10 +8,14 @@ from fastapi.responses import FileResponse, Response
 from PIL import Image
 
 
-def display_image(path: Path, request: Request, cache_root: Path, *, preview=False, versioned=True):
+def display_cache_key(path: Path):
     stat = path.stat()
     identity = f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:1600:82"
-    version = hashlib.sha256(identity.encode()).hexdigest()
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def display_image(path: Path, request: Request, cache_root: Path, *, preview=False, versioned=True):
+    version = display_cache_key(path)
     headers = {"Cache-Control": "private, max-age=3600" if versioned else "private, max-age=0, must-revalidate"}
     if preview:
         with Image.open(path) as source:

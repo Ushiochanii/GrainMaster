@@ -68,6 +68,72 @@ Then open:
 GrainMaster uses CPU inference by default. The bundled example image can be used to verify that
 the installation is working.
 
+## Update an existing installation
+
+Stop GrainMaster with `Ctrl+C` in the terminal running it. Open a terminal in your existing
+`GrainMaster` folder and activate the same virtual environment used for installation:
+
+Windows PowerShell:
+
+    .venv\Scripts\Activate.ps1
+
+macOS / Linux:
+
+    source .venv/bin/activate
+
+If you installed by cloning this repository, update and restart with:
+
+    git pull --ff-only origin main
+    python -m pip install -e ".[web,model]"
+    python scripts/run_web_ui.py
+
+Reopen `http://127.0.0.1:8765` and hard-refresh the browser (`Ctrl+F5` on Windows/Linux,
+or `Cmd+Shift+R` on macOS). Imported photos now have a **Delete** button on their thumbnails.
+Existing imported photos are supported; no data migration or model retraining is required.
+You do not need to reinstall CPU PyTorch for this update.
+
+The update keeps your imported photos, settings, reviews, and analysis results in
+`data/processed/web_uploads/` and `artifacts/`. Back up those folders before updating valuable
+research data. Do not delete your installation folder, run `git clean`, or reset local
+changes to perform an update. If Git reports local changes or divergent branches, preserve
+your changes and resolve that message before proceeding.
+
+If you installed from **Download ZIP**, `git pull` will not work. Download the latest ZIP from
+GitHub and extract it into a separate folder. Copy the updated `src/`, `web/`, `scripts/`,
+`configs/`, and `pyproject.toml` into your existing installation, replacing matching source
+files. Back up any customized configuration files first. Keep the existing `.venv/`,
+`artifacts/`, and `data/` folders. Then activate the existing environment and run the two
+`python` commands above to reinstall the package and restart.
+
+## Manage imported photos
+
+Click **Delete** in the upper-right corner of an imported photo's thumbnail, then confirm.
+Deletion removes that imported photo, its analysis outputs, and its review records from
+GrainMaster. It cannot be undone. The original file you selected from your computer is not
+deleted. The bundled example and photos provided through `data/raw/` cannot be deleted
+through this button.
+
+Wait for analysis or paper-label recognition to finish before deleting a photo. When you
+delete the currently open photo, the workbench automatically opens another available photo.
+
+## Access through a public URL
+
+For a reverse proxy or temporary HTTPS tunnel, set `GRAINMASTER_TRUSTED_ORIGINS` to the exact
+public origin before starting GrainMaster. Multiple origins can be comma-separated.
+For example, on macOS / Linux:
+
+    GRAINMASTER_TRUSTED_ORIGINS=https://grainmaster.example.com python scripts/run_web_ui.py
+
+Windows PowerShell:
+
+    $env:GRAINMASTER_TRUSTED_ORIGINS = "https://grainmaster.example.com"
+    python scripts/run_web_ui.py
+
+This allows uploads, analysis, and deletion from the configured browser origin. It does not
+create a public URL or provide authentication. Without this variable, the existing local
+and Tailscale origin rules still apply. Public instances share their photo library and state
+between visitors, including deletion access.
+
 ## Model
 
 The release includes `weights/seed_v1_yolo26s_seg.pt`.
