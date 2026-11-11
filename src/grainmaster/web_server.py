@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,6 +28,21 @@ from .pipeline import PipelineError, run_pipeline
 ROOT = Path(__file__).resolve().parents[2]
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+_DIGITS = re.compile(r"(\d+)")
+
+
+def natural_photo_key(filename: str) -> tuple:
+    """Sort key that orders photos by the line number in their filename.
+
+    Digit runs compare numerically ("43.jpg" < "0213.jpg" < "1000.jpg"),
+    full-width digits are normalised, and copies such as
+    "0213 - コピー.jpg" sort directly after "0213.jpg".
+    """
+    name = unicodedata.normalize("NFKC", filename).casefold()
+    stem, suffix = os.path.splitext(name)
+    parts = _DIGITS.split(stem)
+    chunks = tuple(int(part) if index % 2 else part for index, part in enumerate(parts))
+    return chunks, suffix, filename
 
 
 class ProcessRequest(BaseModel):
@@ -384,7 +400,10 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
     def list_images():
         discover()
         images = []
-        for image_id, record in sorted(registry.items(), key=lambda item: (not item[1].get("is_example", False), item[0])):
+        for image_id, record in sorted(
+            registry.items(),
+            key=lambda item: (not item[1].get("is_example", False), natural_photo_key(item[1]["filename"]), item[0]),
+        ):
             entry = {"image_id": image_id, "filename": record["filename"], "processed": False, "is_example": bool(record.get("is_example", False)), "is_imported": bool(record.get("is_imported", False))}
             try:
                 folder = output_dir(image_id)
