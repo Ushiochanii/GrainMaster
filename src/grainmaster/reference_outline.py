@@ -37,6 +37,10 @@ def _ruler(image,spatial):
     gray=cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY)
     m=(cv2.GaussianBlur(gray,(5,5),0)>160).astype(np.uint8)*255
     m=cv2.morphologyEx(m,cv2.MORPH_CLOSE,np.ones((5,5),np.uint8))
+    # Detach thin bright background marks (scratches, glare) touching the ruler edge
+    # and smooth tick-print fringes where the ruler falls near the threshold.
+    k=max(5,int(round(min(w,h)*.07))|1)
+    m=cv2.morphologyEx(m,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(k,k)))
     contours,_=cv2.findContours(m,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
     candidates=[c for c in contours if cv2.contourArea(c)>w*h*.20]
     if not candidates: raise ValueError('No complete white ruler silhouette')
@@ -103,6 +107,11 @@ def _card(image,color):
     return _shape(raw,'grid-guided outer dark-border intensity tracing',
                   search_resolution_px=unit/u,rectified_side_positions=positions,
                   corner_note='dark-line radial corner tracing with 0.18 grid-spacing radius prior; inspect visually',corner_tracing=True)
+
+
+def detect_card_outline(image_bgr, color):
+    """Colour-card outline only; the planar spatial correction needs nothing else."""
+    return _card(image_bgr, color)
 
 
 def detect_reference_outlines(image_bgr, spatial, color):

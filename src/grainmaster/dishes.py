@@ -35,6 +35,37 @@ def check_dish_crop(dish: DishROI, image_shape: tuple) -> dict:
                 guarantees_physical_completeness=False)
 
 
+def _split_touching(contour: np.ndarray, shape: tuple, min_radius: float) -> list[np.ndarray]:
+    """Split a blob of touching dishes at inscribed-circle peaks of dish size.
+
+    Neighbouring dishes that touch merge under closing into one elongated blob,
+    which the roundness test would otherwise discard together with both dishes.
+    Peaks must be at least ``min_radius`` deep, so a crescent left by seeds
+    cutting across a single dish is not split into false dishes.
+    """
+    mask = np.zeros(shape[:2], np.uint8)
+    cv2.drawContours(mask, [contour], -1, 255, -1)
+    distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    size = max(3, int(min_radius) | 1)
+    local_max = distance >= cv2.dilate(distance, np.ones((size, size), np.uint8)) - 1e-3
+    peaks = (local_max & (distance >= min_radius)).astype(np.uint8)
+    _, _, _, centroids = cv2.connectedComponentsWithStats(peaks)
+    seeds = centroids[1:]
+    if len(seeds) < 2:
+        return []
+    ys, xs = np.nonzero(mask)
+    nearest = np.linalg.norm(np.column_stack((xs, ys))[:, None, :] - seeds[None, :, :],
+                             axis=2).argmin(axis=1)
+    parts = []
+    for index in range(len(seeds)):
+        part = np.zeros_like(mask)
+        part[ys[nearest == index], xs[nearest == index]] = 255
+        outlines, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if outlines:
+            parts.append(max(outlines, key=cv2.contourArea))
+    return parts
+
+
 def detect_dishes(image_bgr: np.ndarray) -> list[DishROI]:
     """Find near-round blue components; IDs follow rows, then left to right.
 
@@ -58,22 +89,25 @@ def detect_dishes(image_bgr: np.ndarray) -> list[DishROI]:
         closed = cv2.morphologyEx(closed, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         candidates, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours.extend(candidates)
-    found = []
-    for contour in contours:
+    found, areas, elongated = [], [], []
+    minimum_area = small.shape[0] * small.shape[1] * 0.003
+
+    def consider(contour):
         area = cv2.contourArea(contour)
-        if area < small.shape[0] * small.shape[1] * 0.003 or len(contour) < 5:
-            continue
+        if area < minimum_area or len(contour) < 5:
+            return
         (cx, cy), (axis_a, axis_b), angle = cv2.fitEllipse(contour)
         if min(axis_a, axis_b) / max(axis_a, axis_b) < 0.65:
-            continue
+            elongated.append(contour)
+            return
         fill_ratio = area / (np.pi * axis_a * axis_b / 4)
         if fill_ratio < 0.65 or fill_ratio > 1.20:
-            continue
+            return
         center = (float(cx / scale), float(cy / scale))
         axes = (float(axis_a / scale), float(axis_b / scale))
         if any(np.linalg.norm(np.subtract(center, other.center)) < other.radius
                for other in found):
-            continue
+            return
         ellipse = (center, axes, float(angle))
         # Include a small rim margin, while preserving the fitted media ellipse.
         x, y, w, h = cv2.boundingRect(contour)
@@ -88,6 +122,29 @@ def detect_dishes(image_bgr: np.ndarray) -> list[DishROI]:
             metadata={"blue_fill_ratio": float(fill_ratio),
                       "crop_transform": {"offset_x": left, "offset_y": top, "scale": 1.0}},
         ))
+        areas.append(area)
+
+    for contour in contours:
+        consider(contour)
+    # Touching dishes merge into one elongated blob under closing. Split such
+    # blobs where they hold two or more inscribed circles of dish size, using
+    # the dishes already found as the size prior.
+    if found:
+        min_radius = .75 * float(np.median([d.radius for d in found])) * scale
+        for contour in list(elongated):
+            for part in _split_touching(contour, small.shape, min_radius):
+                consider(part)
+    # Seeds can cut one dish into fragments whose centres sit just over one
+    # fragment radius apart. Two real dishes cannot be closer than about one
+    # diameter, so keep only the largest candidate within half a diameter.
+    if found:
+        typical_diameter = float(np.median([max(d.ellipse[1]) for d in found]))
+        keep = []
+        for candidate in np.argsort(areas)[::-1]:
+            if all(np.linalg.norm(np.subtract(found[candidate].center, found[other].center))
+                   >= typical_diameter * .5 for other in keep):
+                keep.append(candidate)
+        found = [found[candidate] for candidate in sorted(keep)]
     # Seed clusters can split the blue surface into fragments. Recover the
     # complete local blue envelope before assigning IDs or exporting crops.
     # Other dishes in this photo supply only a search-size prior, not a mask.
