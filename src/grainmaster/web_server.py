@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,21 +27,6 @@ from .pipeline import PipelineError, run_pipeline
 ROOT = Path(__file__).resolve().parents[2]
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-_DIGITS = re.compile(r"(\d+)")
-
-
-def natural_photo_key(filename: str) -> tuple:
-    """Sort key that orders photos by the line number in their filename.
-
-    Digit runs compare numerically ("43.jpg" < "0213.jpg" < "1000.jpg"),
-    full-width digits are normalised, and copies such as
-    "0213 - コピー.jpg" sort directly after "0213.jpg".
-    """
-    name = unicodedata.normalize("NFKC", filename).casefold()
-    stem, suffix = os.path.splitext(name)
-    parts = _DIGITS.split(stem)
-    chunks = tuple(int(part) if index % 2 else part for index, part in enumerate(parts))
-    return chunks, suffix, filename
 
 
 class ProcessRequest(BaseModel):
@@ -173,14 +157,11 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
                 for path in sorted(uploads.glob("*")):
                     if path.suffix.lower() in IMAGE_EXTENSIONS and SAFE_ID.fullmatch(path.stem):
                         metadata = path.with_suffix(".json")
-                        filename = (
-                            json.loads(metadata.read_text(encoding="utf-8")).get(
-                                "filename", path.name
-                            )
-                            if metadata.exists()
-                            else path.name
-                        )
-                        registry.setdefault(path.stem, {"path": path, "filename": filename, "is_imported": True})
+                        info = json.loads(metadata.read_text(encoding="utf-8")) if metadata.exists() else {}
+                        filename = info.get("filename", path.name)
+                        # Older uploads have no recorded time; the file mtime is the import time.
+                        imported_at = info.get("imported_at", path.stat().st_mtime)
+                        registry.setdefault(path.stem, {"path": path, "filename": filename, "is_imported": True, "imported_at": imported_at})
 
     def image_record(image_id):
         if not SAFE_ID.fullmatch(image_id):
@@ -396,14 +377,20 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
     def health():
         return {"status": "ok", "scale_source": "long_ruler"}
 
+    def import_order(image_id, record):
+        # Example first, then bundled data/raw photos by name, then imports in
+        # the order they were added. The web UI can re-sort by line number.
+        if record.get("is_example"):
+            return (0, 0.0, image_id)
+        if not record.get("is_imported"):
+            return (1, 0.0, image_id)
+        return (2, record.get("imported_at", 0.0), image_id)
+
     @app.get("/api/images")
     def list_images():
         discover()
         images = []
-        for image_id, record in sorted(
-            registry.items(),
-            key=lambda item: (not item[1].get("is_example", False), natural_photo_key(item[1]["filename"]), item[0]),
-        ):
+        for image_id, record in sorted(registry.items(), key=lambda item: import_order(*item)):
             entry = {"image_id": image_id, "filename": record["filename"], "processed": False, "is_example": bool(record.get("is_example", False)), "is_imported": bool(record.get("is_imported", False))}
             try:
                 folder = output_dir(image_id)
@@ -452,11 +439,12 @@ def create_app(project_root=ROOT, config_path=None, state_root=None):
         destination = uploads / f"{image_id}{suffix}"
         destination.write_bytes(data)
         filename = Path((file.filename or "uploaded.jpg").replace("\\", "/")).name
+        imported_at = time()
         destination.with_suffix(".json").write_text(
-            json.dumps({"filename": filename}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"filename": filename, "imported_at": imported_at}, ensure_ascii=False), encoding="utf-8"
         )
         with lock:
-            registry[image_id] = {"path": destination, "filename": filename, "is_imported": True}
+            registry[image_id] = {"path": destination, "filename": filename, "is_imported": True, "imported_at": imported_at}
         return {"image_id": image_id, "filename": filename, "processed": False}
 
     @app.delete("/api/images/{image_id}")
