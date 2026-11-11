@@ -28,6 +28,20 @@ def test_blue_circles_rows_and_crop_scale():
         assert np.array_equal(crop, image[y:y + h, x:x + w])
 
 
+def test_touching_dishes_are_split_not_dropped():
+    image = np.full((700, 1100, 3), 90, dtype=np.uint8)
+    centers = [(180, 300), (410, 300), (590, 300)]
+    for center in centers:
+        cv2.circle(image, center, 90, (200, 30, 20), -1)
+    # Dishes 2 and 3 touch; seeds crowd dish 2 so its own blob is not round.
+    for dy in range(-80, 81, 14):
+        cv2.line(image, (330, 300 + dy), (480, 300 + dy), (100, 180, 220), 6)
+    dishes = detect_dishes(image)
+    assert len(dishes) == 3
+    for dish, center in zip(dishes, centers):
+        assert np.linalg.norm(np.subtract(dish.center, center)) < 25
+
+
 def test_no_blue_and_invalid_image():
     assert detect_dishes(np.zeros((300, 400, 3), np.uint8)) == []
     with pytest.raises(ValueError):

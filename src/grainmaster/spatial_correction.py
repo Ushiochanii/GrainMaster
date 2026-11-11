@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 import cv2
 import numpy as np
 
-from .reference_outline import detect_reference_outlines
+from .reference_outline import detect_card_outline
 from .reference_rectification import ruler_samples, project
 from .spatial_preview import detect_dish_rim, fit_joint_candidate
 
@@ -27,11 +27,13 @@ def shape_descriptors(mask, length, width):
 
 
 def build_spatial_correction(image, color, spatial, dishes):
-    shapes = detect_reference_outlines(image, spatial, color)
+    # Only the card quadrilateral enters the fit. The ruler contributes through its
+    # tick samples, so a ruler silhouette failure must not block the correction.
+    card = detect_card_outline(image, color)
     rims = [detect_dish_rim(image, asdict(dish)) for dish in dishes]
     ticks, indices = ruler_samples(spatial)
     report = fit_joint_candidate(ticks, indices,
-                                 np.asarray(shapes['card']['quadrilateral']),
+                                 np.asarray(card['quadrilateral']),
                                  rims, image.shape)
     matrix = np.asarray(report['matrix'], dtype=float)
     scale = report['after']['pixels_per_mm']

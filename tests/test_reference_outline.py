@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 from pathlib import Path
-from grainmaster.reference_outline import detect_reference_outlines
+from grainmaster.reference_outline import detect_card_outline, detect_reference_outlines
 from grainmaster.contracts import SpatialCalibration, ColorCalibration
 
 
@@ -62,3 +62,18 @@ def test_real_0462_outer_boundary():
     assert 750000<cv2.contourArea(result['card']['contour'])<850000
     assert len(result['ruler']['contour'])>6000
 
+
+def test_ruler_outline_ignores_thin_bright_mark_touching_edge():
+    image,s,c,_=synthetic(0)
+    cv2.line(image,(125,700),(190,640),(235,235,235),2)
+    ruler=detect_reference_outlines(image,s,c)['ruler']
+    assert ruler['bbox'][0]+ruler['bbox'][2]<=135
+
+
+def test_card_outline_does_not_depend_on_ruler_silhouette():
+    image,s,c,expected=synthetic(0)
+    image[:,60:150]=130
+    with pytest.raises(ValueError,match='ruler'):
+        detect_reference_outlines(image,s,c)
+    card=detect_card_outline(image,c)
+    assert abs(cv2.contourArea(card['contour'])/cv2.contourArea(expected)-1)<.025
